@@ -11,13 +11,20 @@ amounts use floor division consistently at both sites.
 | Ticket purchase | `total_price × protocol_fee_bp / 10_000` | Floor |
 | Prize claim | `tier_amount × protocol_fee_bp / 10_000` | Floor |
 
-Ticket-purchase fees are held in the contract and recorded in `AccumulatedFees`
-until an admin withdraws them after finalization. Prize-claim fees are
-transferred directly to the treasury and are not added to `AccumulatedFees`.
-Each fee is therefore paid out exactly once.
+When a treasury is configured, ticket-purchase and prize-claim fees are
+transferred directly to it. Without a configured treasury, ticket-purchase
+and prize-claim fees are recorded in `AccumulatedFees`. Each fee is therefore
+paid out at most once.
 This means the protocol collects *at most* the stated percentage — never more.
 Truncation always favours the payer (ticket buyer or prize winner), which is
 the correct default for a fair raffle protocol.
+
+Treasury transfers use fallible token calls. If a configured treasury rejects
+a fee transfer, the operation returns `TokenTransferFailed` and Soroban rolls
+back the entire transaction. The fee is not redirected to `AccumulatedFees`:
+this preserves the existing fee accounting and lets the caller retry after the
+treasury or token issue is resolved. The same typed error is returned if the
+prize transfer in `emergency_withdraw` fails.
 
 ## Implementation
 
@@ -79,15 +86,17 @@ asserts the treasury balance increases by exactly 45 XLM — no double-count via
 ### 1. At Ticket Purchase
 
 - **Formula:** `total_price × protocol_fee_bp / 10_000` (floor division)
-- **Recipient:** Accrued in the contract; later paid to the recipient selected by the admin
+- **Recipient:** Transferred to the configured treasury, or accrued in the
+  contract when no treasury is configured
 - **Payer:** Ticket buyer
 
 ### 2. At Prize Claim
 
 - **Formula:** `prize_tier_amount × protocol_fee_bp / 10_000` (floor division)
-- **Recipient:** Treasury address
+- **Recipient:** Configured treasury address
 - **Payer:** Prize winner (deducted from payout)
-- **Accounting:** Transferred immediately; not included in `AccumulatedFees`
+- **Accounting:** Transferred immediately when a treasury is configured;
+  otherwise recorded in `AccumulatedFees`.
 
 ## Zero Fee Rate
 

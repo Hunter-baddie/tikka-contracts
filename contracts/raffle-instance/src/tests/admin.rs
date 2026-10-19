@@ -247,6 +247,48 @@ fn emergency_withdraw_succeeds_after_delay_in_drawing_state() {
 }
 
 #[test]
+fn emergency_withdraw_with_extreme_end_time_returns_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let factory = env.register(MockFactory, ());
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+    let token_client = StellarAssetClient::new(&env, &payment_token);
+    token_client.mint(&creator, &1_000_000);
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+    let mut config = base_config(&env, &payment_token);
+    config.end_time = 2_000;
+    config.no_deadline = false;
+    config.max_tickets = 1;
+    config.max_tickets_per_tx = 1;
+    config.prize_amount = MIN_TICKET_PRICE * 10;
+    config.claim_lockup_seconds = Some(0);
+
+    client.init(&factory, &admin, &creator, &config);
+    client.deposit_prize();
+    client.buy_tickets(&creator, &1);
+
+    env.as_contract(&contract_id, || {
+        let mut raffle = crate::read_raffle(&env).unwrap();
+        raffle.end_time = u64::MAX;
+        crate::write_raffle(&env, &raffle);
+    });
+
+    assert_eq!(
+        client.try_emergency_withdraw(&creator),
+        Err(Ok(Error::EmergencyTooEarly))
+    );
+}
+
+#[test]
 fn emergency_withdraw_fails_for_no_deadline_raffle_before_timeout() {
     let env = Env::default();
     env.mock_all_auths();

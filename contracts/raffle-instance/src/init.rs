@@ -51,7 +51,7 @@ use crate::{
 /// | Field | Rule |
 /// |---|---|
 /// | `description` | `len ≤ MAX_DESCRIPTION_LENGTH` (1 000 bytes) |
-/// | `end_time` | Must be in the future unless `no_deadline = true`; `no_deadline` requires `end_time == 0` |
+/// | `end_time` | Must be in the future and within the 10-year maximum duration unless `no_deadline = true`; `no_deadline` requires `end_time == 0` |
 /// | `max_tickets` | `1 ≤ max_tickets ≤ MAX_TICKETS_LIMIT` (100 000) |
 /// | `max_tickets_per_tx` | `1 ≤ max_tickets_per_tx ≤ max_tickets` |
 /// | `max_tickets_per_address` | `≤ max_tickets`; `0` = unlimited. Enforced per-address at purchase time (both `buy_tickets` and `buy_tickets_for`) via `Error::ExceedsMaxTicketsPerAddress` |
@@ -84,7 +84,8 @@ use crate::{
 /// - [`Error::AlreadyInitialized`] — contract already has raffle state.
 /// - [`Error::InvalidParameters`] — any validation rule above is violated.
 /// - [`Error::InvalidTicketRange`] — `min_tickets > max_tickets`.
-/// - [`Error::InvalidEndTime`] — `end_time` is non-zero but in the past.
+/// - [`Error::InvalidEndTime`] — `end_time` is not in the future or exceeds
+///   the maximum raffle duration.
 /// - [`Error::TooManyPrizes`] — `prizes.len() > MAX_PRIZES`.
 /// - [`Error::InvalidTokenAddress`] — `payment_token` is not a valid SAC.
 ///

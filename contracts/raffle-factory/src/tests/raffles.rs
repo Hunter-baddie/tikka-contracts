@@ -125,6 +125,19 @@ fn set_creation_delay_affects_rate_limiter() {
 }
 
 #[test]
+fn set_creation_delay_rejects_excessive_value() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin, _treasury) = setup_factory(&env);
+
+    assert_eq!(
+        client.try_set_creation_delay(&MAX_CREATION_DELAY_SECONDS.saturating_add(1)),
+        Err(Ok(ContractError::InvalidParameters))
+    );
+}
+
+#[test]
 fn create_raffle_rejects_internal_randomness_above_prize_cap() {
     let env = Env::default();
     env.mock_all_auths();

@@ -18,7 +18,7 @@ pub(crate) fn claim_prize(env: Env, winner: Address, tier_index: u32) -> Result<
         return Err(Error::InvalidStatus);
     }
     if let Some(fa) = raffle.finalized_at {
-        if env.ledger().timestamp() < fa + raffle.claim_lockup_seconds {
+        if env.ledger().timestamp() < fa.saturating_add(raffle.claim_lockup_seconds) {
             return Err(Error::ClaimTooEarly);
         }
     }
@@ -84,7 +84,9 @@ pub(crate) fn claim_prize(env: Env, winner: Address, tier_index: u32) -> Result<
 
     if protocol_fee > 0 {
         if let Some(treasury) = &raffle.treasury_address {
-            tc.transfer(&env.current_contract_address(), treasury, &protocol_fee);
+            tc.try_transfer(&env.current_contract_address(), treasury, &protocol_fee)
+                .map_err(|_| Error::TokenTransferFailed)?
+                .map_err(|_| Error::TokenTransferFailed)?;
         } else {
             let prev: i128 = env
                 .storage()
@@ -130,7 +132,7 @@ pub(crate) fn sweep_unclaimed(
 
     let fa = raffle.finalized_at.ok_or(Error::InvalidStatus)?;
     let now = env.ledger().timestamp();
-    if now < fa + raffle.claim_expiry_seconds {
+    if now < fa.saturating_add(raffle.claim_expiry_seconds) {
         return Err(Error::ClaimTooEarly);
     }
 

@@ -18,12 +18,12 @@
 //! purchased in a transaction equals `tickets_sold_before_tx + i`.  IDs are
 //! monotonically increasing and never reused or reordered.
 //!
-//! ## Concurrent purchase guard
+//! ## Concurrent purchases
 //!
-//! `buy_tickets` performs a snapshot-then-verify pattern: it reads
-//! `tickets_sold` before charging the buyer, then re-reads it from storage
-//! immediately before writing new tickets to detect concurrent modifications.
-//! If the counts diverge, it returns [`Error::InvalidStateTransition`].
+//! Purchases that update the same raffle conflict on the shared
+//! [`DataKey::Raffle`] write in their Soroban footprints. Soroban detects the
+//! conflict at the transaction level and rejects one of the transactions;
+//! there is no in-invocation snapshot re-read for concurrency control.
 //!
 //! ## Automatic draw trigger
 //!
@@ -39,7 +39,7 @@ use soroban_sdk::{
     token, Address, BytesN, Env, IntoVal, Symbol, Val, Vec,
 };
 
-use raffle_shared::{apply_bp, RandomnessSource, Ticket};
+use raffle_shared::{RandomnessSource, Ticket};
 
 use crate::events::{DrawTriggered, RandomnessRequested, TicketPurchased};
 use crate::helpers::{
@@ -94,24 +94,19 @@ fn validate_purchase_preconditions(env: &Env, raffle: &Raffle, quantity: u32) ->
 /// 4. Checks the contract is not paused and ticket sales are not paused.
 /// 5. Verifies the raffle is `Active`, prize has been deposited, and the
 ///    deadline has not passed (unless `no_deadline` is set).
-/// 6. Checks `allow_multiple` — when `false`, each address may only hold one
-///    ticket across all transactions. When `max_tickets_per_address > 0`, the
-///    per-address cap is enforced and exceeding it returns
-///    [`Error::ExceedsMaxTicketsPerAddress`].
-/// 7. Performs a double-read concurrency guard (snapshot vs. persisted state).
+/// 6. Checks raffle capacity and per-address ticket limits.
+/// 7. Charges the buyer and accrues the protocol fee.
 /// 8. Writes each [`Ticket`] to persistent storage under
-///    [`DataKey::Ticket(id)`](crate::DataKey::Ticket).
-/// 9. Charges `ticket_price * quantity` and the protocol fee from the
-///    buyer; the fee accrues for withdrawal after finalization.
-/// 10. If the purchase fills the raffle, calls [`transition_to_drawing`] and
-///     (for `External` mode) [`request_randomness`].
-/// 11. Reports volume to the factory via a cross-contract `record_volume` call.
+///    [`DataKey::Ticket(id)`](crate::DataKey::Ticket) and updates the raffle.
+/// 9. If the purchase fills the raffle, calls [`transition_to_drawing`] and
+///    (for `External` mode) [`request_randomness`].
+/// 10. Reports volume to the factory via a cross-contract `record_volume` call.
 ///
 /// ## Protocol fee
 ///
-/// The fee is collected at purchase time and held in `AccumulatedFees` for
-/// withdrawal after finalization. Formula: `floor(total_price ×
-/// protocol_fee_bp / 10 000)`.
+/// The fee is collected at purchase time. It is sent to the configured
+/// treasury, or held in `AccumulatedFees` when no treasury is configured.
+/// Formula: `floor(total_price × protocol_fee_bp / 10 000)`.
 ///
 /// # Auth
 ///
@@ -136,8 +131,7 @@ fn validate_purchase_preconditions(env: &Env, raffle: &Raffle, quantity: u32) ->
 /// - [`Error::NotInitialized`] — raffle state missing.
 /// - [`Error::ContractPaused`] — contract or ticket sales are paused.
 /// - [`Error::RaffleInactive`] — raffle is not in `Active` status.
-/// - [`Error::InvalidStateTransition`] — prize not yet deposited, or
-///   concurrent modification detected.
+/// - [`Error::InvalidStateTransition`] — prize not yet deposited.
 /// - [`Error::RaffleExpired`] — deadline passed and `no_deadline` is false.
 /// - [`Error::TicketsSoldOut`] — purchase would exceed `max_tickets`.
 /// - [`Error::ExceedsMaxTicketsPerAddress`] — purchase would exceed
@@ -199,26 +193,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
     let protocol_fee = quote.fee;
     let effective_price = quote.effective_ticket_price;
 
-    //  3. Verify no concurrent modification
-    let persisted = crate::read_raffle(&env)?;
-    let persisted_sold = persisted.tickets_sold;
-    let persisted_count: u32 = env
-        .storage()
-        .persistent()
-        .get(&DataKey::TicketCount(buyer.clone()))
-        .unwrap_or(0);
-    if persisted_sold != snapshot_sold || persisted_count != current_count {
-        return Err(Error::InvalidStateTransition);
-    }
-    if persisted_sold
-        .checked_add(quantity)
-        .ok_or(Error::ArithmeticOverflow)?
-        > persisted.max_tickets
-    {
-        return Err(Error::TicketsSoldOut);
-    }
-
-    //  4. PAYMENT FIRST! (before any state mutation)
+    //  3. PAYMENT FIRST! (before any state mutation)
     let token_client = token::Client::new(&env, &raffle.payment_token);
     let contract_address = env.current_contract_address();
     let _ = token_client
@@ -226,10 +201,13 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
         .map_err(|_| Error::TokenTransferFailed)?
         .map_err(|_| Error::TokenTransferFailed)?;
 
-    //  5. Accrue protocol fees for withdrawal after finalization.
+    //  4. Accrue protocol fees for withdrawal after finalization.
     if protocol_fee > 0 {
         if let Some(treasury) = &raffle.treasury_address {
-            token_client.transfer(&contract_address, treasury, &protocol_fee);
+            token_client
+                .try_transfer(&contract_address, treasury, &protocol_fee)
+                .map_err(|_| Error::TokenTransferFailed)?
+                .map_err(|_| Error::TokenTransferFailed)?;
         } else {
             let prev: i128 = env
                 .storage()
@@ -242,7 +220,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
         }
     }
 
-    //  6. NOW mutate state (write tickets)
+    //  5. NOW mutate state (write tickets)
     if current_count == 0 {
         let mut buyers: Vec<Address> = env
             .storage()
@@ -285,7 +263,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
         .checked_add(quantity)
         .ok_or(Error::ArithmeticOverflow)?;
 
-    //  7. transition_to_drawing and request_randomness (if needed)
+    //  6. transition_to_drawing and request_randomness (if needed)
     if raffle.tickets_sold >= raffle.max_tickets {
         transition_to_drawing(&env, &mut raffle, timestamp)?;
         if raffle.randomness_source == RandomnessSource::External {
@@ -310,7 +288,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
 
     crate::write_raffle(&env, &raffle);
 
-    //  8. Emit event (after state is final)
+    //  7. Emit event (after state is final)
     TicketPurchased {
         buyer: buyer.clone(),
         ticket_ids,
@@ -323,7 +301,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
     }
     .publish(&env);
 
-    //  9. Factory notifications LAST (external calls)
+    //  8. Factory notifications LAST (external calls)
     if let Some(factory_address) = env
         .storage()
         .instance()
@@ -457,43 +435,12 @@ pub(crate) fn buy_tickets_for(env: Env, buyer: Address, recipient: Address, quan
     }
 
     let timestamp = env.ledger().timestamp();
-        fix/security-checks-effects-763
-    let ticket_total = raffle
-        .ticket_price
-        .checked_mul(quantity as i128)
-        .ok_or(Error::ArithmeticOverflow)?;
-    let protocol_fee = apply_bp(ticket_total, raffle.protocol_fee_bp)
-        .ok_or(Error::ArithmeticOverflow)?;
-
-    let total_price = ticket_total
-        .checked_add(protocol_fee)
-        .ok_or(Error::ArithmeticOverflow)?;
-        master
     let quote = calculate_buy_quote(&raffle, quantity)?;
     let total_price = quote.net_to_pay;
     let protocol_fee = quote.fee;
     let effective_price = quote.effective_ticket_price;
 
-    //  3. Verify no concurrent modification
-    let persisted = crate::read_raffle(&env)?;
-    let persisted_sold = persisted.tickets_sold;
-    let persisted_count: u32 = env
-        .storage()
-        .persistent()
-        .get(&DataKey::TicketCount(recipient.clone()))
-        .unwrap_or(0);
-    if persisted_sold != snapshot_sold || persisted_count != current_count {
-        return Err(Error::InvalidStateTransition);
-    }
-    if persisted_sold
-        .checked_add(quantity)
-        .ok_or(Error::ArithmeticOverflow)?
-        > persisted.max_tickets
-    {
-        return Err(Error::TicketsSoldOut);
-    }
-
-    //  4. PAYMENT FIRST! (before any state mutation)
+    //  3. PAYMENT FIRST! (before any state mutation)
     let token_client = token::Client::new(&env, &raffle.payment_token);
     let contract_address = env.current_contract_address();
     let _ = token_client
@@ -501,10 +448,13 @@ pub(crate) fn buy_tickets_for(env: Env, buyer: Address, recipient: Address, quan
         .map_err(|_| Error::TokenTransferFailed)?
         .map_err(|_| Error::TokenTransferFailed)?;
 
-    //  5. Accrue protocol fees for withdrawal after finalization.
+    //  4. Accrue protocol fees for withdrawal after finalization.
     if protocol_fee > 0 {
         if let Some(treasury) = &raffle.treasury_address {
-            token_client.transfer(&contract_address, treasury, &protocol_fee);
+            token_client
+                .try_transfer(&contract_address, treasury, &protocol_fee)
+                .map_err(|_| Error::TokenTransferFailed)?
+                .map_err(|_| Error::TokenTransferFailed)?;
         } else {
             let prev: i128 = env
                 .storage()
@@ -517,7 +467,7 @@ pub(crate) fn buy_tickets_for(env: Env, buyer: Address, recipient: Address, quan
         }
     }
 
-    //  6. NOW mutate state (write tickets)
+    //  5. NOW mutate state (write tickets)
     if current_count == 0 {
         let mut buyers: Vec<Address> = env
             .storage()
@@ -560,7 +510,7 @@ pub(crate) fn buy_tickets_for(env: Env, buyer: Address, recipient: Address, quan
         .checked_add(quantity)
         .ok_or(Error::ArithmeticOverflow)?;
 
-    //  7. transition_to_drawing and request_randomness (if needed)
+    //  6. transition_to_drawing and request_randomness (if needed)
     if raffle.tickets_sold >= raffle.max_tickets {
         transition_to_drawing(&env, &mut raffle, timestamp)?;
         if raffle.randomness_source == RandomnessSource::External {
@@ -585,7 +535,7 @@ pub(crate) fn buy_tickets_for(env: Env, buyer: Address, recipient: Address, quan
 
     crate::write_raffle(&env, &raffle);
 
-    //  8. Emit event (after state is final)
+    //  7. Emit event (after state is final)
     TicketPurchased {
         buyer: recipient.clone(),
         ticket_ids,
@@ -598,7 +548,7 @@ pub(crate) fn buy_tickets_for(env: Env, buyer: Address, recipient: Address, quan
     }
     .publish(&env);
 
-    //  9. Factory notifications LAST (external calls)
+    //  8. Factory notifications LAST (external calls)
     if let Some(factory_address) = env
         .storage()
         .instance()

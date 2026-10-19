@@ -81,6 +81,9 @@ pub const DEFAULT_CLAIM_LOCKUP_SECONDS: u64 = 3_600;
 /// Upper bound on the claim lockup delay (7 days).
 pub const MAX_CLAIM_LOCKUP_SECONDS: u64 = 604_800;
 
+/// Maximum duration of a raffle with a deadline (10 years).
+pub const MAX_RAFFLE_DURATION_SECONDS: u64 = 10 * 365 * 24 * 3_600;
+
 /// Minimum time (seconds) after finalization before unclaimed prizes may be
 /// swept to the treasury.  Equals 30 days.
 pub const MIN_CLAIM_EXPIRY_SECONDS: u64 = 30 * 24 * 3_600; // 2_592_000
@@ -110,6 +113,9 @@ pub const EMERGENCY_WITHDRAW_DELAY_SECONDS: u64 = 90 * 24 * 3_600; // 7_776_000
 /// Timelock delay (seconds) before a proposed admin operation may be executed.
 /// Equals 48 hours, giving users time to react to protocol changes.
 pub const TIMELOCK_DELAY_SECONDS: u64 = 172_800;
+
+/// Maximum factory-enforced creation cooldown (365 days).
+pub const MAX_CREATION_DELAY_SECONDS: u64 = 365 * 24 * 3_600;
 
 /// Factory creates a state checkpoint every `CHECKPOINT_INTERVAL` raffles.
 pub const CHECKPOINT_INTERVAL: u32 = 1_000;

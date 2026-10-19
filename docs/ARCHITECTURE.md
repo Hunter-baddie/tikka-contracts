@@ -34,6 +34,15 @@ graph TB
 1. The oracle service polls those events and calls `provide_randomness` back on the instance (see [ORACLE.md](ORACLE.md) for pipeline details).
 1. The instance finalizes winners, emits finalization events, and winners claim prizes.
 
+## Purchase Concurrency
+
+Both purchase entrypoints update the shared raffle record. Soroban's
+transaction footprint conflict detection prevents two purchases based on the
+same raffle state from both committing that write; a conflicting transaction
+is rejected at the protocol level. The contract therefore checks capacity
+once against its invocation state and does not re-read the same storage within
+the invocation as a concurrency guard.
+
 ## Administrative Control
 
 Both the factory and each raffle instance use a two-step admin transfer. The

@@ -288,7 +288,10 @@ pub(crate) fn enforce_swap_guard(
     amount_out: i128,
     min_amount_out: i128,
 ) -> Result<(), Error> {
-    let deadline = env.ledger().timestamp() + raffle.swap_deadline_seconds;
+    let deadline = env
+        .ledger()
+        .timestamp()
+        .saturating_add(raffle.swap_deadline_seconds);
     if env.ledger().timestamp() > deadline {
         return Err(Error::DeadlinePassed);
     }

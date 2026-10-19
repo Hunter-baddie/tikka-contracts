@@ -694,7 +694,7 @@ pub(crate) fn emergency_withdraw(env: Env, caller: Address) -> Result<(), Error>
         if est < EMERGENCY_WITHDRAW_DELAY_SECONDS {
             return Err(Error::EmergencyTooEarly);
         }
-    } else if now < raffle.end_time + EMERGENCY_WITHDRAW_DELAY_SECONDS {
+    } else if now < raffle.end_time.saturating_add(EMERGENCY_WITHDRAW_DELAY_SECONDS) {
         return Err(Error::EmergencyTooEarly);
     }
 
@@ -718,11 +718,13 @@ pub(crate) fn emergency_withdraw(env: Env, caller: Address) -> Result<(), Error>
     )?;
 
     let tc = token::Client::new(&env, &prize_token);
-    tc.transfer(
+    tc.try_transfer(
         &env.current_contract_address(),
         &raffle.creator,
         &raffle.prize_amount,
-    );
+    )
+    .map_err(|_| Error::TokenTransferFailed)?
+    .map_err(|_| Error::TokenTransferFailed)?;
 
     EmergencyWithdrawn {
         withdrawn_by: caller,

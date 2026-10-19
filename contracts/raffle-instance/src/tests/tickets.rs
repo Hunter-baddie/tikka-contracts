@@ -2,6 +2,73 @@
 
 use super::*;
 
+#[contract]
+struct RejectingTreasuryToken;
+
+#[contracttype]
+#[derive(Clone)]
+enum RejectingTokenKey {
+    Recipient,
+}
+
+#[contractimpl]
+impl RejectingTreasuryToken {
+    pub fn set_rejected_recipient(env: Env, recipient: Address) {
+        env.storage()
+            .instance()
+            .set(&RejectingTokenKey::Recipient, &recipient);
+    }
+
+    pub fn transfer(env: Env, _from: Address, to: Address, _amount: i128) {
+        let rejected: Address = env
+            .storage()
+            .instance()
+            .get(&RejectingTokenKey::Recipient)
+            .unwrap();
+        if to == rejected {
+            panic!("treasury transfer rejected");
+        }
+    }
+}
+
+#[test]
+fn buy_tickets_returns_typed_error_when_treasury_rejects_fee_transfer() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let token_id = env.register(RejectingTreasuryToken, ());
+    let token_client = RejectingTreasuryTokenClient::new(&env, &token_id);
+    let contract_id = env.register(RaffleInstance, ());
+    let client = RaffleInstanceClient::new(&env, &contract_id);
+    let factory = env.register(MockFactory, ());
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    token_client.set_rejected_recipient(&treasury);
+    let config = RaffleConfigBuilder::new(&env, token_id)
+        .description(String::from_str(&env, "rejected treasury"))
+        .max_tickets(2)
+        .max_tickets_per_tx(2)
+        .ticket_price(MIN_TICKET_PRICE)
+        .prize_amount(MIN_TICKET_PRICE * 2)
+        .protocol_fee_bp(1_000)
+        .treasury_address(Some(treasury))
+        .build()
+        .expect("valid fee config");
+
+    client.init(&factory, &admin, &creator, &config);
+    client.deposit_prize();
+
+    assert_eq!(
+        client.try_buy_tickets(&buyer, &1),
+        Err(Ok(Error::TokenTransferFailed))
+    );
+    assert_eq!(client.get_raffle().tickets_sold, 0);
+}
+
 #[test]
 fn ticket_number_matches_monotonic_id() {
     let env = Env::default();

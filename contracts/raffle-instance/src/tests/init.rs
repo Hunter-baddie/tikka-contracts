@@ -45,6 +45,20 @@ fn test_init_claim_lockup_seconds_mid_range_succeeds() {
 }
 
 #[test]
+fn init_rejects_end_time_beyond_maximum_duration() {
+    let (env, contract_id, factory, admin, creator, payment_token) = init_bounds_env();
+    let client = ContractClient::new(&env, &contract_id);
+    let mut config = base_config(&env, &payment_token);
+    config.no_deadline = false;
+    config.end_time = u64::MAX;
+
+    assert_eq!(
+        client.try_init(&factory, &admin, &creator, &config),
+        Err(Ok(Error::InvalidEndTime))
+    );
+}
+
+#[test]
 fn init_accepts_min_ticket_price_and_rejects_below_it() {
     let (env, contract_id, factory, admin, creator, payment_token) = init_bounds_env();
     let client = ContractClient::new(&env, &contract_id);

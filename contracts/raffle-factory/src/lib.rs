@@ -25,7 +25,7 @@ use raffle_shared::{
 
 use raffle_shared::constants::{
     CHECKPOINT_INTERVAL, MAX_DESCRIPTION_LENGTH, MAX_PROTOCOL_FEE_BP, MAX_RECURRING_INTERVAL_SECONDS,
-    MIN_RECURRING_INTERVAL_SECONDS, TIMELOCK_DELAY_SECONDS,
+    MAX_CREATION_DELAY_SECONDS, MIN_RECURRING_INTERVAL_SECONDS, TIMELOCK_DELAY_SECONDS,
 };
 
 /// A timelocked administrative operation queued for future execution.
@@ -602,7 +602,10 @@ impl RaffleFactory {
 
         env.storage().persistent().set(&DataKey::OpCounter, &op_id);
 
-        let effective_timestamp = env.ledger().timestamp() + TIMELOCK_DELAY_SECONDS;
+        let effective_timestamp = env
+            .ledger()
+            .timestamp()
+            .saturating_add(TIMELOCK_DELAY_SECONDS);
         let op = AdminOp::SetConfig(key, address);
         let pending = PendingOp {
             op: op.clone(),
@@ -639,7 +642,10 @@ impl RaffleFactory {
 
         env.storage().persistent().set(&DataKey::OpCounter, &op_id);
 
-        let effective_timestamp = env.ledger().timestamp() + TIMELOCK_DELAY_SECONDS;
+        let effective_timestamp = env
+            .ledger()
+            .timestamp()
+            .saturating_add(TIMELOCK_DELAY_SECONDS);
         let op = AdminOp::SetProtocolFeeBP(protocol_fee_bp);
         let pending = PendingOp {
             op: op.clone(),
@@ -672,7 +678,10 @@ impl RaffleFactory {
 
         env.storage().persistent().set(&DataKey::OpCounter, &op_id);
 
-        let effective_timestamp = env.ledger().timestamp() + TIMELOCK_DELAY_SECONDS;
+        let effective_timestamp = env
+            .ledger()
+            .timestamp()
+            .saturating_add(TIMELOCK_DELAY_SECONDS);
         let pending = PendingOp {
             op: AdminOp::UpdateWasmHash(new_wasm_hash.clone()),
             effective_timestamp,
@@ -932,8 +941,8 @@ impl RaffleFactory {
                 .get(&DataKey::LastCreationTime(creator.clone()))
                 .unwrap_or(0);
 
-            if now < last_creation + min_delay {
-                let unlock_timestamp = last_creation + min_delay;
+            let unlock_timestamp = last_creation.saturating_add(min_delay);
+            if now < unlock_timestamp {
                 events::CreationRateLimited {
                     creator: creator.clone(),
                     unlock_timestamp,
@@ -1199,8 +1208,14 @@ impl RaffleFactory {
 
 
 
+    /// Set the minimum delay between raffle creations by non-whitelisted creators.
+    ///
+    /// `delay_seconds` may not exceed [`MAX_CREATION_DELAY_SECONDS`].
     pub fn set_creation_delay(env: Env, delay_seconds: u64) -> Result<(), ContractError> {
         require_admin(&env)?;
+        if delay_seconds > MAX_CREATION_DELAY_SECONDS {
+            return Err(ContractError::InvalidParameters);
+        }
         env.storage()
             .persistent()
             .set(&DataKey::MinCreationDelay, &delay_seconds);

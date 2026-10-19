@@ -4,7 +4,8 @@ use crate::constants::{
     DEFAULT_CLAIM_EXPIRY_SECONDS, DEFAULT_CLAIM_LOCKUP_SECONDS,
     DEFAULT_SWAP_DEADLINE_SECONDS, MAX_CATEGORY_LENGTH, MAX_CLAIM_LOCKUP_SECONDS,
     MAX_DESCRIPTION_LENGTH, MAX_PRIZE_AMOUNT, MAX_PRIZES, MAX_SWAP_DEADLINE_SECONDS,
-    MAX_TICKETS_LIMIT, MIN_CLAIM_EXPIRY_SECONDS, MIN_TICKET_PRICE,
+    MAX_RAFFLE_DURATION_SECONDS, MAX_TICKETS_LIMIT, MIN_CLAIM_EXPIRY_SECONDS,
+    MIN_TICKET_PRICE,
 };
 use crate::{RandomnessSource, RaffleConfig};
 
@@ -356,6 +357,9 @@ pub fn validate_config(
     if config.end_time != 0 && config.end_time <= now {
         return Err(ConfigValidationError::InvalidEndTime);
     }
+    if config.end_time.saturating_sub(now) > MAX_RAFFLE_DURATION_SECONDS {
+        return Err(ConfigValidationError::InvalidEndTime);
+    }
     if config.max_tickets == 0 || config.max_tickets > MAX_TICKETS_LIMIT {
         return Err(invalid());
     }
@@ -496,5 +500,18 @@ mod tests {
             .build();
 
         assert_eq!(result, Err(ConfigValidationError::InvalidParameters));
+    }
+
+    #[test]
+    fn build_rejects_end_time_beyond_maximum_duration() {
+        let env = Env::default();
+        let payment_token = Address::generate(&env);
+
+        let result = RaffleConfigBuilder::new(&env, payment_token)
+            .no_deadline(false)
+            .end_time(u64::MAX)
+            .build();
+
+        assert_eq!(result, Err(ConfigValidationError::InvalidEndTime));
     }
 }
